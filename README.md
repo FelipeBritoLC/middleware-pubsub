@@ -605,17 +605,25 @@ O relatório é impresso no terminal e salvo em `<saida>/resumo.txt`:
 - **leituras perdidas** = geradas − recebidas por pelo menos um coletor;
 - **duplicatas** que chegaram até a aplicação;
 - **cobertura por coletor** (quantas leituras cada coletor recebeu);
-- **latência** da geração da leitura até a chegada no coletor (média, p50, p95, p99, máx.), separada por perfil.
+- **latência** da geração da leitura até a chegada no coletor (média, p50, p95, p99, máx.), separada por perfil;
+- **trocas de broker** dos coletores, com o instante (em segundos desde o início do teste) em que cada coletor perdeu a conexão e em que se reconectou.
 
-Também é gerado `<saida>/entregas.csv`, com uma linha por entrega:
+Também são gerados dois CSVs. O `<saida>/entregas.csv` tem uma linha por entrega (`recebida_s` = segundos desde o início do teste):
 
 ```
-coletor,sensor,perfil,seq,latencia_ms
-0,raro-7,raro,1,11.005
-0,raro-4,raro,1,11.169
+coletor,sensor,perfil,seq,latencia_ms,recebida_s
+0,raro-7,raro,1,11.005,0.512
+0,raro-4,raro,1,11.169,0.514
 ```
 
-Esse CSV pode ser aberto em planilha ou em Python/pandas para gerar os gráficos do relatório (histograma de latência por perfil, CDF, latência ao longo do tempo etc.).
+O `<saida>/publicacoes.csv` tem uma linha por chamada de `Publicar`, com o instante em que ela começou e quanto tempo levou até a resposta. É ele que mostra quanto tempo os sensores ficaram esperando durante um failover:
+
+```
+sensor,perfil,inicio_s,duracao_ms
+continuo-3,continuo,0.402,1.204
+```
+
+Os CSVs podem ser abertos em planilha ou em Python/pandas para gerar os gráficos do relatório.
 
 ### 10.3 Testes prontos
 

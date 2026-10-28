@@ -23,10 +23,18 @@ type registro struct {
 	sensor   string
 	seq      int
 	latencia time.Duration
+	recebida time.Duration
+}
+
+type publicacao struct {
+	sensor  string
+	inicio  time.Duration
+	duracao time.Duration
 }
 
 type teste struct {
 	brokers     []string
+	inicio      time.Time
 	fimGeracao  time.Time
 	prazoFinal  time.Time
 	mu          sync.Mutex
@@ -38,6 +46,8 @@ type teste struct {
 	ok          int64
 	semInscrito int64
 	erros       int64
+	publicacoes []publicacao
+	trocas      []string
 }
 
 func main() {
@@ -56,6 +66,7 @@ func main() {
 
 	t := &teste{
 		brokers: leitura.ListaBrokers(*brokers),
+		inicio:  time.Now(),
 		geradas: map[string]int{},
 		perfis:  map[string]string{},
 	}
@@ -75,6 +86,9 @@ func main() {
 	}
 
 	parar := make(chan struct{})
+	for i, c := range clientesColetores {
+		go t.vigiarColetor(i, c, parar)
+	}
 	for i := 0; i < *travados; i++ {
 		go conexaoTravada(t.brokers[i%len(t.brokers)], parar)
 	}
@@ -148,7 +162,7 @@ func (t *teste) iniciarColetor(n int, topicos []string) (*pubsub.Cliente, error)
 				return
 			}
 			t.recebidas[n][chave] = true
-			t.registros = append(t.registros, registro{coletor: n, sensor: l.Sensor, seq: l.Seq, latencia: leitura.Latencia(l)})
+			t.registros = append(t.registros, registro{coletor: n, sensor: l.Sensor, seq: l.Seq, latencia: leitura.Latencia(l), recebida: time.Since(t.inicio)})
 		})
 		if err != nil {
 			return nil, err
@@ -167,7 +181,11 @@ func (t *teste) gerar(id string) leitura.Leitura {
 }
 
 func (t *teste) publicar(c *pubsub.Cliente, topico string, l leitura.Leitura) bool {
+	comeco := time.Now()
 	_, err := c.Publicar(topico, l.Bytes())
+	t.mu.Lock()
+	t.publicacoes = append(t.publicacoes, publicacao{sensor: l.Sensor, inicio: comeco.Sub(t.inicio), duracao: time.Since(comeco)})
+	t.mu.Unlock()
 	switch err {
 	case nil:
 		atomic.AddInt64(&t.ok, 1)
@@ -278,6 +296,26 @@ func (t *teste) sensorRajada(id, topico string) {
 	}
 }
 
+func (t *teste) vigiarColetor(n int, c *pubsub.Cliente, parar chan struct{}) {
+	atual := c.BrokerAtual()
+	for {
+		select {
+		case <-parar:
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+		novo := c.BrokerAtual()
+		if novo != atual {
+			msg := fmt.Sprintf("%.2fs coletor %d: '%s' -> '%s'", time.Since(t.inicio).Seconds(), n, atual, novo)
+			log.Print(msg)
+			t.mu.Lock()
+			t.trocas = append(t.trocas, msg)
+			t.mu.Unlock()
+			atual = novo
+		}
+	}
+}
+
 func conexaoTravada(broker string, parar chan struct{}) {
 	conn, err := net.Dial("tcp", broker)
 	if err != nil {
@@ -351,6 +389,13 @@ func (t *teste) relatorio(pasta string, duracao time.Duration) {
 			percentil(v, 0.5), percentil(v, 0.95), percentil(v, 0.99), v[len(v)-1])
 	}
 
+	if len(t.trocas) > 0 {
+		fmt.Fprintf(&sb, "\ntrocas de broker dos coletores:\n")
+		for _, tr := range t.trocas {
+			fmt.Fprintf(&sb, "%s\n", tr)
+		}
+	}
+
 	fmt.Print(sb.String())
 
 	os.MkdirAll(pasta, 0755)
@@ -362,9 +407,17 @@ func (t *teste) relatorio(pasta string, duracao time.Duration) {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintln(f, "coletor,sensor,perfil,seq,latencia_ms")
+	fmt.Fprintln(f, "coletor,sensor,perfil,seq,latencia_ms,recebida_s")
 	for _, r := range t.registros {
-		fmt.Fprintf(f, "%d,%s,%s,%d,%.3f\n", r.coletor, r.sensor, t.perfis[r.sensor], r.seq, float64(r.latencia.Microseconds())/1000)
+		fmt.Fprintf(f, "%d,%s,%s,%d,%.3f,%.3f\n", r.coletor, r.sensor, t.perfis[r.sensor], r.seq, float64(r.latencia.Microseconds())/1000, r.recebida.Seconds())
+	}
+	p, err := os.Create(filepath.Join(pasta, "publicacoes.csv"))
+	if err == nil {
+		fmt.Fprintln(p, "sensor,perfil,inicio_s,duracao_ms")
+		for _, pb := range t.publicacoes {
+			fmt.Fprintf(p, "%s,%s,%.3f,%.3f\n", pb.sensor, t.perfis[pb.sensor], pb.inicio.Seconds(), float64(pb.duracao.Microseconds())/1000)
+		}
+		p.Close()
 	}
 	fmt.Printf("\nresultados salvos em %s/\n", pasta)
 }
